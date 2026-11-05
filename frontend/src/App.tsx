@@ -27,8 +27,8 @@ export default function App() {
             >
               <Route path="/attendance" element={<AttendancePage />} />
               <Route path="/employees" element={<EmployeesPage />} />
-              <Route path="/coordinators" element={<CoordinatorsPage />} />
               <Route element={<ProtectedRoute requireManualTeam />}>
+                <Route path="/coordinators" element={<CoordinatorsPage />} />
                 <Route path="/coordinator-attendance" element={<CoordinatorAttendancePage />} />
                 <Route path="/users" element={<UserManagementPage />} />
               </Route>

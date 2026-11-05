@@ -85,6 +85,7 @@ class RosterEntry(BaseModel):
     geofence_radius_km: float = Field(default=8.0, gt=0, allow_inf_nan=False)
     shift_start: str | None = None
     shift_end: str | None = None
+    shift_allowed_minutes: int | None = None
     shift_grace_minutes: int | None = None
 
 
@@ -101,6 +102,7 @@ class EmployeeRegistrationRequest(BaseModel):
     geofence_radius_km: float = Field(default=8.0, gt=0, allow_inf_nan=False)
     shift_start: str | None = None
     shift_end: str | None = None
+    shift_allowed_minutes: int | None = Field(default=None, ge=0, le=1440)
     shift_grace_minutes: int | None = None
 
 
@@ -117,6 +119,7 @@ class EmployeeUpdateRequest(BaseModel):
     geofence_radius_km: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     shift_start: Optional[str] = None
     shift_end: Optional[str] = None
+    shift_allowed_minutes: Optional[int] = Field(default=None, ge=0, le=1440)
     shift_grace_minutes: Optional[int] = None
     is_active: Optional[bool] = None
 
@@ -432,6 +435,7 @@ async def register_employee(request: EmployeeRegistrationRequest) -> RosterEntry
         "geofence_radius_km": request.geofence_radius_km,
         "shift_start": request.shift_start if request.shift_start is not None else role_shift_defaults(request.role)["shift_start"],
         "shift_end": request.shift_end if request.shift_end is not None else role_shift_defaults(request.role)["shift_end"],
+        "shift_allowed_minutes": request.shift_allowed_minutes if request.shift_allowed_minutes is not None else role_shift_defaults(request.role)["shift_allowed_minutes"],
         "shift_grace_minutes": request.shift_grace_minutes if request.shift_grace_minutes is not None else role_shift_defaults(request.role)["shift_grace_minutes"],
     }
     try:
@@ -654,21 +658,40 @@ async def list_attendance(
     search: str | None = None,
     area: str | None = None,
     attendance_status: str | None = None,
+    include_coordinator_attendance: bool = False,
+    role: str | None = None,
     page: int = 1,
     page_size: int = 50,
 ) -> tuple[list[dict], int]:
     db = get_db()
-    query: dict = {
-        "review_status": {"$ne": "superseded"},
-        "person_role": {"$nin": ["PC"]},
-        "entry_type": {"$ne": "coordinator_manual"},
-    }
+    query: dict = {"review_status": {"$ne": "superseded"}}
     coordinator_ids = [
         coordinator.pc_id
         for coordinator in (await list_coordinators(page_size=100_000))[0]
     ]
-    if coordinator_ids:
-        query["$nor"] = [{"employee_id": {"$in": coordinator_ids}}]
+    if include_coordinator_attendance:
+        query["$or"] = [
+            {
+                "employee_id": {"$nin": coordinator_ids},
+                "entry_type": {"$ne": "coordinator_manual"},
+            },
+            {
+                "employee_id": {"$in": coordinator_ids},
+                "person_role": "PC",
+                "entry_type": "coordinator_manual",
+            },
+        ]
+    else:
+        query["person_role"] = {"$nin": ["PC"]}
+        query["entry_type"] = {"$ne": "coordinator_manual"}
+        if coordinator_ids:
+            query["$nor"] = [{"employee_id": {"$in": coordinator_ids}}]
+
+    if role == "PC":
+        query["person_role"] = "PC"
+        query["entry_type"] = "coordinator_manual"
+    elif role is not None:
+        query["person_role"] = role
 
     if employee_id is not None:
         query["employee_id"] = employee_id
@@ -679,8 +702,8 @@ async def list_attendance(
             query["verdict"] = "flagged"
         else:
             status_values = {
-                "present": ["present"], "late": ["late", "absent_late"],
-                "absent": ["absent"],
+                "present": ["present"], "late": ["late"],
+                "absent": ["absent", "absent_late"],
             }
             if attendance_status not in status_values:
                 raise ValueError("attendance_status must be present, late, absent, or flagged")
@@ -704,10 +727,12 @@ async def list_attendance(
                     {"received_at_utc": {"$lte": norm_to + "T23:59:59.999999"}},
                 ]
             })
-        if len(date_conditions) == 1:
-            query.update(date_conditions[0])
-        elif len(date_conditions) > 1:
-            query["$and"] = date_conditions
+        existing_or = query.pop("$or", None)
+        combined_conditions = ([{"$or": existing_or}] if existing_or else []) + date_conditions
+        if len(combined_conditions) == 1:
+            query.update(combined_conditions[0])
+        elif combined_conditions:
+            query.setdefault("$and", []).extend(combined_conditions)
 
     if pc_id is not None:
         employee_ids = [pc_id]
@@ -1042,6 +1067,34 @@ async def get_submissions_grouped(
             "attendance_code": override["attendance_code"],
             "entry_type": "override",
         }
+
+    return result
+
+
+async def get_coordinator_attendance_grouped(
+    coordinator_ids: list[str],
+    date_from: str,
+    date_to: str,
+) -> dict[str, dict[str, dict]]:
+    """Return saved manual coordinator attendance, keyed by coordinator and date."""
+    db = get_db()
+    result: dict[str, dict[str, dict]] = {pc_id: {} for pc_id in coordinator_ids}
+    if not coordinator_ids:
+        return result
+
+    norm_from = normalize_date_str(date_from)
+    norm_to = normalize_date_str(date_to)
+    cursor = db.submissions.find({
+        "employee_id": {"$in": coordinator_ids},
+        "person_role": "PC",
+        "entry_type": "coordinator_manual",
+        "attendance_date": {"$gte": norm_from, "$lte": norm_to},
+    })
+    async for doc in cursor:
+        pc_id = doc.get("employee_id")
+        day = doc.get("attendance_date")
+        if pc_id in result and day:
+            result[pc_id][day] = doc
 
     return result
 

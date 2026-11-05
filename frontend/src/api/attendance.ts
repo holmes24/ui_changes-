@@ -1,13 +1,15 @@
 import axios from 'axios';
 import { apiClient } from './client';
-import type { AttendanceGrid, AttendanceRole, AttendanceRecord, PageMeta, Verdict } from '../types';
+import type { AttendanceGrid, AttendancePersonRole, AttendanceRole, AttendanceRecord, PageMeta, Verdict } from '../types';
 
 export interface AttendanceListParams {
   employee_id?: string;
   pc_id?: string;
   verdict?: Verdict;
   area?: string;
+  role?: AttendancePersonRole;
   attendance_status?: 'present' | 'late' | 'absent' | 'flagged';
+  include_coordinator_attendance?: boolean;
   date_from?: string; // YYYY-MM-DD
   date_to?: string;
   page?: number;
@@ -150,6 +152,7 @@ export interface ExportParams {
   pc_id?: string;
   employee_id?: string;
   area?: string;
+  include_coordinator_attendance?: boolean;
 }
 
 // Excel export can't go through a normal fetch-and-parse call — it's a

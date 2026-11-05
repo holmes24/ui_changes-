@@ -6,9 +6,11 @@ const now = new Date();
 
 export function ExportPanel({
   coordinators,
+  includeCoordinatorAttendance: initialIncludeCoordinatorAttendance,
   onClose,
 }: {
   coordinators: Coordinator[];
+  includeCoordinatorAttendance: boolean;
   onClose: () => void;
 }) {
   // The API accepts EITHER month+year OR a date range, never both — the mode
@@ -19,6 +21,7 @@ export function ExportPanel({
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [pcId, setPcId] = useState('');
+  const [includeCoordinatorAttendance, setIncludeCoordinatorAttendance] = useState(initialIncludeCoordinatorAttendance);
   const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -27,9 +30,9 @@ export function ExportPanel({
     setError(null);
     try {
       if (mode === 'month') {
-        await downloadExport({ month, year, pc_id: pcId || undefined });
+        await downloadExport({ month, year, pc_id: pcId || undefined, include_coordinator_attendance: includeCoordinatorAttendance });
       } else {
-        await downloadExport({ date_from: dateFrom, date_to: dateTo, pc_id: pcId || undefined });
+        await downloadExport({ date_from: dateFrom, date_to: dateTo, pc_id: pcId || undefined, include_coordinator_attendance: includeCoordinatorAttendance });
       }
       onClose();
     } catch {
@@ -149,6 +152,15 @@ export function ExportPanel({
             </option>
           ))}
         </select>
+
+        <label className="flex items-center gap-2 mb-4 text-sm cursor-pointer" style={{ color: 'var(--color-ink-muted)' }}>
+          <input
+            type="checkbox"
+            checked={includeCoordinatorAttendance}
+            onChange={(event) => setIncludeCoordinatorAttendance(event.target.checked)}
+          />
+          Include project coordinator attendance sheet
+        </label>
 
         <div
           className="text-xs mb-4 px-3 py-2 rounded-md space-y-0.5"

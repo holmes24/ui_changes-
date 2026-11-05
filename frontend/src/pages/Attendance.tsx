@@ -1,8 +1,8 @@
 import { useEffect, useState, useCallback } from 'react';
-import { deleteAttendance, listAttendance, overrideAttendanceCell } from '../api/attendance';
+import { deleteAttendance, listAttendance, overrideAttendanceCell, saveCoordinatorAttendance } from '../api/attendance';
 import { listCoordinators } from '../api/coordinators';
 import { listEmployees } from '../api/employees';
-import type { AttendanceRecord, Coordinator, Employee, Verdict } from '../types';
+import type { AttendancePersonRole, AttendanceRecord, Coordinator, Employee, Verdict } from '../types';
 import { ReviewStatusBadge, ShiftStatusBadge, FaceMatchStatus } from '../components/StatusBadge';
 import { ResolveModal } from '../components/ResolveModal';
 import { ExportPanel } from '../components/ExportPanel';
@@ -19,6 +19,34 @@ const VERDICT_FILTERS: { label: string; value: Verdict | '' }[] = [
 ];
 
 const PAGE_SIZE_OPTIONS = [5, 10, 20, 25, 50, 100] as const;
+type DatePreset = 'today' | 'yesterday' | 'week' | 'month' | 'range';
+
+function todayInKolkata() {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(new Date());
+}
+
+function shiftDate(date: string, days: number) {
+  const shifted = new Date(`${date}T00:00:00Z`);
+  shifted.setUTCDate(shifted.getUTCDate() + days);
+  return shifted.toISOString().slice(0, 10);
+}
+
+function rangeForPreset(preset: Exclude<DatePreset, 'range'>, today: string): [string, string] {
+  if (preset === 'today') return [today, today];
+  if (preset === 'yesterday') {
+    const yesterday = shiftDate(today, -1);
+    return [yesterday, yesterday];
+  }
+  if (preset === 'week') {
+    const weekday = new Date(`${today}T00:00:00Z`).getUTCDay();
+    const daysSinceMonday = (weekday + 6) % 7;
+    return [shiftDate(today, -daysSinceMonday), today];
+  }
+  return [`${today.slice(0, 7)}-01`, today];
+}
+
 const STATUS_OVERRIDE_OPTIONS = [
   ['P', 'Present'],
   ['L', 'Late'],
@@ -57,11 +85,14 @@ export function AttendancePage() {
 
   const [verdict, setVerdict] = useState<Verdict | ''>('');
   const [pcId, setPcId] = useState('');
-  const [dateFrom, setDateFrom] = useState('');
-  const [dateTo, setDateTo] = useState('');
+  const [roleFilter, setRoleFilter] = useState<AttendancePersonRole | ''>('');
+  const [datePreset, setDatePreset] = useState<DatePreset>('today');
+  const [dateFrom, setDateFrom] = useState(() => todayInKolkata());
+  const [dateTo, setDateTo] = useState(() => todayInKolkata());
   const [search, setSearch] = useState('');
   const [area, setArea] = useState('');
   const [attendanceStatus, setAttendanceStatus] = useState('');
+  const [includeCoordinatorAttendance, setIncludeCoordinatorAttendance] = useState(false);
   const [areas, setAreas] = useState<string[]>([]);
 
   const [resolving, setResolving] = useState<AttendanceRecord | null>(null);
@@ -81,11 +112,13 @@ export function AttendancePage() {
       const data = await listAttendance({
         verdict: verdict || undefined,
         pc_id: pcId || undefined,
+        role: roleFilter || undefined,
         date_from: dateFrom || undefined,
         date_to: dateTo || undefined,
         search: search || undefined,
         area: area || undefined,
         attendance_status: (attendanceStatus || undefined) as 'present' | 'late' | 'absent' | 'flagged' | undefined,
+        include_coordinator_attendance: canManage && (includeCoordinatorAttendance || roleFilter === 'PC'),
         page,
         page_size: pageSize,
       });
@@ -96,7 +129,7 @@ export function AttendancePage() {
     } finally {
       setLoading(false);
     }
-  }, [verdict, pcId, dateFrom, dateTo, search, area, attendanceStatus, page, pageSize]);
+  }, [verdict, pcId, roleFilter, dateFrom, dateTo, search, area, attendanceStatus, includeCoordinatorAttendance, canManage, page, pageSize]);
 
   useEffect(() => {
     load();
@@ -106,7 +139,7 @@ export function AttendancePage() {
   // result set would just show an empty page.
   useEffect(() => {
     setPage(1);
-  }, [verdict, pcId, dateFrom, dateTo, search, area, attendanceStatus, pageSize]);
+  }, [verdict, pcId, roleFilter, dateFrom, dateTo, search, area, attendanceStatus, includeCoordinatorAttendance, pageSize]);
 
   useEffect(() => {
     listCoordinators().then((r) => setCoordinators(r.coordinators)).catch(() => {});
@@ -129,6 +162,14 @@ export function AttendancePage() {
   }, []);
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
+
+  function selectDatePreset(preset: DatePreset) {
+    setDatePreset(preset);
+    if (preset === 'range') return;
+    const [from, to] = rangeForPreset(preset, todayInKolkata());
+    setDateFrom(from);
+    setDateTo(to);
+  }
 
   async function removeAttendance(record: AttendanceRecord) {
     const employeeName = employeeMap[record.employee_id]?.name ?? record.employee_name ?? record.employee_id;
@@ -155,6 +196,20 @@ export function AttendancePage() {
     setSavingStatus(true);
     setError(null);
     try {
+      if (editingStatus.entry_type === 'coordinator_manual') {
+        const updated = await saveCoordinatorAttendance({
+          pc_id: editingStatus.employee_id,
+          date: editingStatus.attendance_date,
+          attendance_code: statusCode === 'A' ? 'A' : 'P',
+          reason: statusReason.trim() || undefined,
+        });
+        setRecords((current) => current.map((record) =>
+          record._id === editingStatus._id ? { ...record, ...updated } : record
+        ));
+        setEditingStatus(null);
+        setStatusReason('');
+        return;
+      }
       await overrideAttendanceCell({
         employee_id: editingStatus.employee_id,
         date: editingStatus.attendance_date,
@@ -221,6 +276,19 @@ export function AttendancePage() {
       </div>
 
       <div className="flex flex-wrap gap-2 mb-5 items-center">
+        {canManage && (
+          <label className="flex items-center gap-2 px-2 py-1.5 rounded-md text-sm border cursor-pointer" style={{ borderColor: 'var(--color-border)', color: 'var(--color-ink-muted)' }}>
+            <input
+              type="checkbox"
+              checked={includeCoordinatorAttendance}
+              onChange={(event) => {
+                setIncludeCoordinatorAttendance(event.target.checked);
+                if (!event.target.checked && roleFilter === 'PC') setRoleFilter('');
+              }}
+            />
+            Include project coordinator attendance
+          </label>
+        )}
         {VERDICT_FILTERS.map((f) => (
           <button
             key={f.label}
@@ -258,6 +326,24 @@ export function AttendancePage() {
           {areas.map((value) => <option key={value} value={value}>{value}</option>)}
         </select>
 
+        <select
+          aria-label="Attendance role"
+          value={roleFilter}
+          onChange={(event) => {
+            const role = event.target.value as AttendancePersonRole | '';
+            setRoleFilter(role);
+            if (role === 'PC') setIncludeCoordinatorAttendance(true);
+          }}
+          className="px-2 py-1.5 rounded-md text-sm border"
+          style={{ background: 'var(--color-surface-raised)', borderColor: 'var(--color-border)', color: 'var(--color-ink-muted)' }}
+        >
+          <option value="">All roles</option>
+          {canManage && <option value="PC">Project coordinator (PC)</option>}
+          <option value="FS">Field supervisor (FS)</option>
+          <option value="LS">Local supervisor (LS)</option>
+          <option value="LSS">Local supervisor scanning (LSS)</option>
+        </select>
+
         <select value={attendanceStatus} onChange={(e) => setAttendanceStatus(e.target.value)} className="px-2 py-1.5 rounded-md text-sm border" style={{ background: 'var(--color-surface-raised)', borderColor: 'var(--color-border)', color: 'var(--color-ink-muted)' }}>
           <option value="">All statuses</option>
           <option value="present">Present</option>
@@ -266,31 +352,40 @@ export function AttendancePage() {
           <option value="flagged">Flagged</option>
         </select>
 
-        <input
-          type="date"
-          value={dateFrom}
-          onChange={(e) => setDateFrom(e.target.value)}
+        <select
+          aria-label="Attendance date range preset"
+          value={datePreset}
+          onChange={(event) => selectDatePreset(event.target.value as DatePreset)}
           className="px-2 py-1.5 rounded-md text-sm border"
-          style={{
-            background: 'var(--color-surface-raised)',
-            borderColor: 'var(--color-border)',
-            color: 'var(--color-ink-muted)',
-          }}
-        />
-        <span className="text-sm" style={{ color: 'var(--color-ink-faint)' }}>
-          to
-        </span>
-        <input
-          type="date"
-          value={dateTo}
-          onChange={(e) => setDateTo(e.target.value)}
-          className="px-2 py-1.5 rounded-md text-sm border"
-          style={{
-            background: 'var(--color-surface-raised)',
-            borderColor: 'var(--color-border)',
-            color: 'var(--color-ink-muted)',
-          }}
-        />
+          style={{ background: 'var(--color-surface-raised)', borderColor: 'var(--color-border)', color: 'var(--color-ink-muted)' }}
+        >
+          <option value="today">Today</option>
+          <option value="yesterday">Yesterday</option>
+          <option value="week">This week</option>
+          <option value="month">This month</option>
+          <option value="range">Custom range</option>
+        </select>
+        {datePreset === 'range' && (
+          <>
+            <input
+              aria-label="Attendance from date"
+              type="date"
+              value={dateFrom}
+              onChange={(event) => setDateFrom(event.target.value)}
+              className="px-2 py-1.5 rounded-md text-sm border"
+              style={{ background: 'var(--color-surface-raised)', borderColor: 'var(--color-border)', color: 'var(--color-ink-muted)' }}
+            />
+            <span className="text-sm" style={{ color: 'var(--color-ink-faint)' }}>to</span>
+            <input
+              aria-label="Attendance to date"
+              type="date"
+              value={dateTo}
+              onChange={(event) => setDateTo(event.target.value)}
+              className="px-2 py-1.5 rounded-md text-sm border"
+              style={{ background: 'var(--color-surface-raised)', borderColor: 'var(--color-border)', color: 'var(--color-ink-muted)' }}
+            />
+          </>
+        )}
 
         <input
           value={search}
@@ -353,10 +448,18 @@ export function AttendancePage() {
                         Manual
                       </span>
                     )}
+                    {r.entry_type === 'coordinator_manual' && (
+                      <span
+                        className="px-1.5 py-0.5 rounded text-[10px] font-medium"
+                        style={{ background: 'var(--color-accent-bg)', color: 'var(--color-accent)' }}
+                      >
+                        Project coordinator
+                      </span>
+                    )}
                   </div>
                 </td>
                 <td className="px-4 py-2.5" style={{ color: 'var(--color-ink-muted)' }}>
-                  {employeeMap[r.employee_id]?.area || '—'}
+                  {r.entry_type === 'coordinator_manual' ? 'Not applicable' : employeeMap[r.employee_id]?.area || '—'}
                 </td>
                 <td className="px-4 py-2.5" style={{ color: 'var(--color-ink-muted)' }}>
                   {istDateTime(r.received_at_utc)}
@@ -384,10 +487,12 @@ export function AttendancePage() {
                   </span>
                 </td>
                 <td className="px-4 py-2.5">
-                  <ShiftStatusBadge status={r.shift_status} skipped={r.entry_type === 'manual'} />
+                  {r.entry_type === 'coordinator_manual'
+                    ? <span className="text-xs" style={{ color: 'var(--color-ink-faint)' }}>Not applicable</span>
+                    : <ShiftStatusBadge status={r.shift_status} skipped={r.entry_type === 'manual'} />}
                 </td>
                 <td className="px-4 py-2.5" style={{ color: 'var(--color-ink-muted)' }}>
-                  {r.geofence_display ?? (r.geofence_passed === true ? 'Within range' : r.geofence_passed === false ? 'Outside range' : 'Not verified')}
+                  {r.entry_type === 'coordinator_manual' ? 'Not applicable' : r.geofence_display ?? (r.geofence_passed === true ? 'Within range' : r.geofence_passed === false ? 'Outside range' : 'Not verified')}
                 </td>
                 <td className="px-4 py-2.5">
                   <FaceMatchStatus record={r} />
@@ -440,7 +545,7 @@ export function AttendancePage() {
                     <Pencil size={13} />
                     Change status
                   </button>
-                  {r.verdict === 'flagged' && r.review_status === 'pending' && (
+                  {r.entry_type !== 'coordinator_manual' && r.verdict === 'flagged' && r.review_status === 'pending' && (
                     <button
                       onClick={() => setResolving(r)}
                       className="text-xs font-medium"
@@ -449,7 +554,7 @@ export function AttendancePage() {
                       Review
                     </button>
                   )}
-                  <button
+                  {r.entry_type !== 'coordinator_manual' && <button
                     onClick={() => removeAttendance(r)}
                     disabled={deletingId === r._id}
                     className="ml-2 p-1 rounded transition-colors hover:bg-black/5 disabled:opacity-50"
@@ -458,7 +563,7 @@ export function AttendancePage() {
                     aria-label={`Delete attendance record for ${employeeMap[r.employee_id]?.name ?? r.employee_id}`}
                   >
                     <Trash2 size={15} />
-                  </button>
+                  </button>}
                 </td>}
               </tr>
             ))}
@@ -536,7 +641,9 @@ export function AttendancePage() {
               className="w-full px-3 py-2 rounded-md text-sm border mb-3"
               style={{ background: 'var(--color-surface-sunken)', borderColor: 'var(--color-border)', color: 'var(--color-ink)' }}
             >
-              {STATUS_OVERRIDE_OPTIONS.map(([value, label]) => (
+              {(editingStatus.entry_type === 'coordinator_manual'
+                ? STATUS_OVERRIDE_OPTIONS.filter(([value]) => value === 'P' || value === 'A')
+                : STATUS_OVERRIDE_OPTIONS).map(([value, label]) => (
                 <option key={value} value={value}>{label}</option>
               ))}
             </select>
@@ -569,7 +676,7 @@ export function AttendancePage() {
         </div>
       )}
 
-      {exportOpen && <ExportPanel coordinators={coordinators} onClose={() => setExportOpen(false)} />}
+      {exportOpen && <ExportPanel coordinators={coordinators} includeCoordinatorAttendance={includeCoordinatorAttendance} onClose={() => setExportOpen(false)} />}
 
       {manualEntryOpen && (
         <ManualEntryModal

@@ -40,10 +40,12 @@ export interface Employee {
   geofence_radius_km: number;
   shift_start: string | null;
   shift_end: string | null;
+  shift_allowed_minutes: number | null;
   shift_grace_minutes: number | null;
 }
 
-export type AttendanceRole = 'FS' | 'LS' | 'LSS';
+export type AttendanceRole = 'PC' | 'FS' | 'LS' | 'LSS';
+export type AttendancePersonRole = AttendanceRole;
 
 export interface AttendanceGridRow {
   employee_id: string;
@@ -83,7 +85,7 @@ export interface AttendanceRecord {
   _id: string;
   employee_id: string;
   employee_name?: string | null;
-  person_role?: AttendanceRole | null;
+  person_role?: AttendancePersonRole | null;
   sender_phone: string | null;
   caption: string | null;
   media_url: string | null;

@@ -40,6 +40,7 @@ from app.db.database import (
     list_admin_users,
     get_roster_by_employee_id,
     get_submissions_grouped,
+    get_coordinator_attendance_grouped,
     list_attendance,
     list_coordinator_attendance,
     initialize_coordinator_attendance_defaults,
@@ -669,6 +670,8 @@ async def get_attendance(
     search: str | None = None,
     area: str | None = None,
     attendance_status: str | None = None,
+    include_coordinator_attendance: bool = False,
+    role: Literal["PC", "FS", "LS", "LSS"] | None = None,
     page: int = 1,
     page_size: int = 50,
     admin: AdminUser = Depends(get_current_user),
@@ -690,10 +693,17 @@ async def get_attendance(
     attendance_status = attendance_status or None
     if attendance_status and attendance_status not in {"present", "late", "absent", "flagged"}:
         raise HTTPException(status_code=400, detail="attendance_status must be present, late, absent, or flagged")
+    if (include_coordinator_attendance or role == "PC") and admin.role not in {"super_admin", "manual_team"}:
+        raise HTTPException(status_code=403, detail="Coordinator attendance is restricted to administrators and manual team")
     records, total = await list_attendance(
         employee_id=employee_id, pc_id=pc_id, verdict=verdict,
         date_from=date_from, date_to=date_to, search=search, area=area,
         attendance_status=attendance_status,
+        include_coordinator_attendance=(
+            (include_coordinator_attendance or role == "PC")
+            and admin.role in {"super_admin", "manual_team"}
+        ),
+        role=role,
         page=page, page_size=min(max(page_size, 1), 500),
     )
     from app.services.attendance_grid import marker_for_submission
@@ -715,7 +725,11 @@ async def get_attendance(
                 record["check_in_at_ist"] = capture.isoformat()
                 employee = await get_roster_by_employee_id(record["employee_id"]) if record.get("employee_id") and record.get("person_role") != "PC" else None
                 if employee:
-                    status, _ = check_shift_window(capture, employee.shift_start, employee.shift_end, employee.shift_grace_minutes, employee.role)
+                    status, _ = check_shift_window(
+                        capture, employee.shift_start, employee.shift_end,
+                        employee.shift_grace_minutes, employee.role,
+                        employee_allowed_minutes=employee.shift_allowed_minutes,
+                    )
                     record["shift_status"] = status
             except (ValueError, TypeError):
                 record["check_in_at_ist"] = None
@@ -780,6 +794,8 @@ async def get_attendance(
                 if record.get("location_check_method") == "range_then_city"
                 else "City/district check unavailable"
             )
+        elif record.get("entry_type") == "coordinator_manual":
+            record["geofence_display"] = "Not applicable"
         else:
             radius = record.get("geofence_radius_meters")
             radius_display = (
@@ -837,6 +853,8 @@ async def get_coordinator_attendance(
     search: str | None = None, page: int = 1, page_size: int = 25,
     admin: AdminUser = Depends(get_current_admin),
 ):
+    if admin.role not in {"super_admin", "manual_team"}:
+        raise HTTPException(status_code=403, detail="Coordinator attendance is restricted to administrators and manual team")
     attendance_status = attendance_status or None
     if attendance_status not in {None, "present", "absent"}:
         raise HTTPException(status_code=400, detail="attendance_status must be present or absent")
@@ -854,6 +872,8 @@ async def post_coordinator_attendance_defaults(
     request: CoordinatorAttendanceDefaultsRequest,
     admin: AdminUser = Depends(get_current_admin),
 ):
+    if admin.role not in {"super_admin", "manual_team"}:
+        raise HTTPException(status_code=403, detail="Coordinator attendance is restricted to administrators and manual team")
     try:
         date_obj = datetime.strptime(request.date, "%Y-%m-%d").date()
         if date_obj.isoformat() != request.date:
@@ -872,6 +892,8 @@ async def post_coordinator_attendance(
     request: CoordinatorAttendanceRequest,
     admin: AdminUser = Depends(get_current_admin),
 ):
+    if admin.role not in {"super_admin", "manual_team"}:
+        raise HTTPException(status_code=403, detail="Coordinator attendance is restricted to administrators and manual team")
     try:
         date_obj = datetime.strptime(request.date, "%Y-%m-%d").date()
         if date_obj.isoformat() != request.date:
@@ -990,6 +1012,7 @@ async def export_attendance(
     pc_id: str | None = None,
     employee_id: str | None = None,
     area: str | None = None,
+    include_coordinator_attendance: bool = False,
     admin: AdminUser = Depends(get_current_admin),
 ):
     """
@@ -1017,7 +1040,11 @@ async def export_attendance(
     days = daterange(date_from, date_to)
 
     # Keep coordinator names for employee hierarchy labels; PCs are not attendance participants.
-    coordinators, _ = await list_coordinators(pc_id=pc_id, page_size=100_000)
+    coordinators, _ = await list_coordinators(
+        pc_id=pc_id,
+        is_active=True if employee_id is not None or area is not None else None,
+        page_size=100_000,
+    )
     coordinators = [c.model_dump() for c in coordinators]
     employees, _ = await list_employees(pc_id=pc_id, area=area, page_size=100_000)
     employees = [e.model_dump() for e in employees]
@@ -1054,7 +1081,24 @@ async def export_attendance(
             days,
         )
 
-    xlsx_bytes = build_export_workbook(coordinators, employees, grids, days)
+    if include_coordinator_attendance:
+        coordinator_submissions = await get_coordinator_attendance_grouped(
+            [coordinator["pc_id"] for coordinator in coordinators], date_from, date_to
+        )
+        for pc_id, submissions_by_date in coordinator_submissions.items():
+            grids[pc_id] = {
+                day: (
+                    "P" if submission.get("attendance_status") == "present" else
+                    "A" if submission.get("attendance_status") == "absent" else
+                    "—"
+                )
+                for day, submission in submissions_by_date.items()
+            }
+
+    xlsx_bytes = build_export_workbook(
+        coordinators, employees, grids, days,
+        include_coordinator_attendance=include_coordinator_attendance,
+    )
 
     filename = f"attendance_{date_from}_to_{date_to}.xlsx"
     return Response(
