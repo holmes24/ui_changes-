@@ -697,17 +697,10 @@ async def list_attendance(
         query["employee_id"] = employee_id
     if verdict is not None:
         query["verdict"] = verdict
-    if attendance_status is not None:
-        if attendance_status == "flagged":
-            query["verdict"] = "flagged"
-        else:
-            status_values = {
-                "present": ["present"], "late": ["late"],
-                "absent": ["absent", "absent_late"],
-            }
-            if attendance_status not in status_values:
-                raise ValueError("attendance_status must be present, late, absent, or flagged")
-            query["attendance_status"] = {"$in": status_values[attendance_status]}
+    if attendance_status is not None and attendance_status not in {
+        "present", "late", "absent", "flagged",
+    }:
+        raise ValueError("attendance_status must be present, late, absent, or flagged")
 
     if date_from is not None or date_to is not None:
         date_conditions = []
@@ -753,19 +746,63 @@ async def list_attendance(
         else:
             query["employee_id"] = {"$in": matched_ids}
 
-    total = await db.submissions.count_documents(query)
     skip = (page - 1) * page_size
     results = []
-    async for doc in (
-        db.submissions.find(query)
-        .sort([("received_at_utc", -1), ("_id", -1)])
-        .skip(skip)
-        .limit(page_size)
-    ):
-        doc["_id"] = str(doc["_id"])
-        if not doc.get("attendance_date"):
-            doc["attendance_date"] = normalize_date_str(doc.get("received_at_utc"))
-        results.append(doc)
+    cursor = db.submissions.find(query).sort([("received_at_utc", -1), ("_id", -1)])
+    if attendance_status is None:
+        total = await db.submissions.count_documents(query)
+        cursor = cursor.skip(skip).limit(page_size)
+        async for doc in cursor:
+            doc["_id"] = str(doc["_id"])
+            if not doc.get("attendance_date"):
+                doc["attendance_date"] = normalize_date_str(doc.get("received_at_utc"))
+            results.append(doc)
+    else:
+        # Filter on the effective attendance status. An override must take
+        # precedence over the submission's original attendance_status, just
+        # as it does in the attendance grid and Excel export.
+        all_records = []
+        async for doc in cursor:
+            doc["_id"] = str(doc["_id"])
+            if not doc.get("attendance_date"):
+                doc["attendance_date"] = normalize_date_str(doc.get("received_at_utc"))
+            all_records.append(doc)
+
+        override_keys = [
+            {"employee_id": doc["employee_id"], "attendance_date": doc["attendance_date"]}
+            for doc in all_records
+            if doc.get("employee_id") and doc.get("attendance_date")
+        ]
+        overrides_by_key = {}
+        if override_keys:
+            async for override in db.attendance_overrides.find({"$or": override_keys}):
+                overrides_by_key[(override["employee_id"], override["attendance_date"])] = override
+
+        override_status_codes = {
+            "present": {"P", "M", "HD", "WO", "H"},
+            "late": {"L"},
+            "absent": {"A", "AL"},
+            "flagged": {"F"},
+        }[attendance_status]
+        matching_records = []
+        for doc in all_records:
+            key = (doc.get("employee_id"), doc.get("attendance_date"))
+            override = overrides_by_key.get(key)
+            if override is not None:
+                matches = override.get("attendance_code") in override_status_codes
+            elif attendance_status == "flagged":
+                matches = doc.get("verdict") == "flagged"
+            elif attendance_status == "present":
+                matches = doc.get("attendance_status") == "present"
+            elif attendance_status == "late":
+                matches = doc.get("attendance_status") == "late"
+            else:
+                matches = doc.get("attendance_status") in {"absent", "absent_late"}
+            if matches:
+                matching_records.append(doc)
+
+        total = len(matching_records)
+        results = matching_records[skip:skip + page_size]
     return results, total
 
 

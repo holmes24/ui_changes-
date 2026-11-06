@@ -835,11 +835,13 @@ async def get_attendance(
     if override_keys:
         overrides_by_key = {}
         async for override in get_db().attendance_overrides.find({"$or": override_keys}):
-            overrides_by_key[(override["employee_id"], override["attendance_date"])] = override["attendance_code"]
+            overrides_by_key[(override["employee_id"], override["attendance_date"])] = override
         for record in records:
             key = (record.get("employee_id"), record.get("attendance_date"))
             if key in overrides_by_key:
-                record["attendance_code"] = overrides_by_key[key]
+                override = overrides_by_key[key]
+                record["attendance_code"] = override["attendance_code"]
+                record["status_change_reason"] = override.get("reason") or None
     return {
         "count": len(records), "total": total, "page": page, "page_size": page_size,
         "records": records,

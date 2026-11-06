@@ -193,11 +193,17 @@ export function CoordinatorAttendancePage() {
       <tbody>{visibleRows.map(({ coordinator, saved, attendanceDate }) => {
         const rowKey = `${coordinator.pc_id}:${attendanceDate}`;
         const value = statuses[rowKey] ?? (saved?.attendance_status === 'present' ? 'P' : saved?.attendance_status === 'absent' ? 'A' : '');
+        const reason = reasons[rowKey] ?? saved?.reason ?? '';
         return <tr key={rowKey} className="border-t" style={{ borderColor: 'var(--color-border-subtle)' }}>
           <td className="px-3 py-2.5">{coordinator.pc_id}</td><td className="px-3 py-2.5">{coordinator.name}</td>
           <td className="px-3 py-2.5">{saved?.attendance_date ?? attendanceDate}</td>
           <td className="px-3 py-2.5"><select aria-label={`Attendance for ${coordinator.name} on ${attendanceDate}`} value={value} onChange={(event) => setStatuses((current) => ({ ...current, [rowKey]: event.target.value as 'P' | 'A' }))} className="rounded-md border px-2 py-1.5" style={{ borderColor: 'var(--color-border)', background: 'var(--color-surface-raised)' }}><option value="">Select status</option><option value="P">Present</option><option value="A">Absent</option></select></td>
-          <td className="px-3 py-2.5"><input value={reasons[rowKey] ?? saved?.reason ?? ''} onChange={(event) => setReasons((current) => ({ ...current, [rowKey]: event.target.value }))} placeholder="Optional" className="w-full rounded-md border px-2 py-1.5" style={{ borderColor: 'var(--color-border)', background: 'var(--color-surface-raised)' }} /></td>
+          <td className="px-3 py-2.5"><details>
+            <summary className="cursor-pointer select-none text-xs" style={{ color: 'var(--color-accent)' }}>
+              {reason.trim() ? 'View / edit note' : 'Add note'}
+            </summary>
+            <input value={reason} onChange={(event) => setReasons((current) => ({ ...current, [rowKey]: event.target.value }))} placeholder="Optional" aria-label={`Reason for ${coordinator.name} on ${attendanceDate}`} className="mt-2 w-full rounded-md border px-2 py-1.5 text-sm" style={{ borderColor: 'var(--color-border)', background: 'var(--color-surface-raised)' }} />
+          </details></td>
           <td className="px-3 py-2.5"><button disabled={!value || saving === rowKey} onClick={() => void save(coordinator, attendanceDate, saved)} className="rounded-md px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50" style={{ background: 'var(--color-accent)' }}>{saving === rowKey ? 'Saving…' : saved ? 'Update' : 'Save'}</button></td>
         </tr>;
       })}

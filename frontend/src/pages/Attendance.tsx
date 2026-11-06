@@ -68,6 +68,16 @@ function attendanceMarker(record: AttendanceRecord): string {
   if (record.attendance_status === 'pending') return 'F';
   return record.verdict === 'verified' ? 'P' : 'F';
 }
+
+function matchesStatusFilter(code: string, filter: string): boolean {
+  if (!filter) return true;
+  if (filter === 'present') return ['P', 'M', 'HD', 'WO', 'H'].includes(code);
+  if (filter === 'late') return code === 'L';
+  if (filter === 'absent') return code === 'A' || code === 'AL';
+  if (filter === 'flagged') return code === 'F';
+  return true;
+}
+
 const istDateTime = (value?: string | null) => value
   ? new Intl.DateTimeFormat('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'short', timeStyle: 'medium' }).format(new Date(value))
   : 'Not available';
@@ -203,9 +213,15 @@ export function AttendancePage() {
           attendance_code: statusCode === 'A' ? 'A' : 'P',
           reason: statusReason.trim() || undefined,
         });
-        setRecords((current) => current.map((record) =>
-          record._id === editingStatus._id ? { ...record, ...updated } : record
-        ));
+        const remainsInFilter = matchesStatusFilter(updated.attendance_code ?? statusCode, attendanceStatus);
+        const wasVisible = records.some((record) => record._id === editingStatus._id);
+        setRecords((current) => current
+          .map((record) => record._id === editingStatus._id ? { ...record, ...updated } : record)
+          .filter((record) => record._id !== editingStatus._id || remainsInFilter));
+        if (wasVisible && !remainsInFilter) {
+          setTotal((current) => Math.max(0, current - 1));
+          if (records.length === 1 && page > 1) setPage((current) => current - 1);
+        }
         setEditingStatus(null);
         setStatusReason('');
         return;
@@ -218,11 +234,23 @@ export function AttendancePage() {
       });
       // Update visible rows immediately. Re-fetching the whole attendance
       // page after every override made the table flash blank on slow SQL links.
-      setRecords((current) => current.map((record) =>
+      const remainsInFilter = matchesStatusFilter(statusCode, attendanceStatus);
+      const wasVisible = records.some((record) =>
         record.employee_id === editingStatus.employee_id && record.attendance_date === editingStatus.attendance_date
-          ? { ...record, attendance_code: statusCode }
-          : record
-      ));
+      );
+      setRecords((current) => current
+        .map((record) =>
+          record.employee_id === editingStatus.employee_id && record.attendance_date === editingStatus.attendance_date
+            ? { ...record, attendance_code: statusCode, status_change_reason: statusReason.trim() || null }
+            : record
+        )
+        .filter((record) =>
+          remainsInFilter || record.employee_id !== editingStatus.employee_id || record.attendance_date !== editingStatus.attendance_date
+        ));
+      if (wasVisible && !remainsInFilter) {
+        setTotal((current) => Math.max(0, current - 1));
+        if (records.length === 1 && page > 1) setPage((current) => current - 1);
+      }
       setEditingStatus(null);
       setStatusReason('');
     } catch {
@@ -398,6 +426,19 @@ export function AttendancePage() {
             color: 'var(--color-ink)',
           }}
         />
+        <label className="flex items-center gap-1 text-xs" style={{ color: 'var(--color-ink-muted)' }}>
+          Show
+          <select
+            aria-label="Records per page"
+            value={pageSize}
+            onChange={(event) => setPageSize(Number(event.target.value))}
+            className="rounded border px-1 py-1.5"
+            style={{ borderColor: 'var(--color-border)', background: 'var(--color-surface-raised)' }}
+          >
+            {PAGE_SIZE_OPTIONS.map((size) => <option key={size} value={size}>{size}</option>)}
+          </select>
+          per page
+        </label>
       </div>
 
       {error && (
@@ -485,6 +526,22 @@ export function AttendancePage() {
                   >
                     {attendanceMarker(r)}
                   </span>
+                  {canManage && (r.status_change_reason || r.reason) && (
+                    <details className="mt-1 text-xs">
+                      <summary
+                        className="cursor-pointer select-none"
+                        style={{ color: 'var(--color-accent)' }}
+                      >
+                        View remark
+                      </summary>
+                      <p
+                        className="mt-1 max-w-56 whitespace-pre-wrap break-words rounded border p-2"
+                        style={{ borderColor: 'var(--color-border-subtle)', color: 'var(--color-ink-muted)' }}
+                      >
+                        {r.status_change_reason || r.reason}
+                      </p>
+                    </details>
+                  )}
                 </td>
                 <td className="px-4 py-2.5">
                   {r.entry_type === 'coordinator_manual'
@@ -588,9 +645,7 @@ export function AttendancePage() {
             className="flex items-center justify-between px-4 py-2.5 border-t text-xs"
             style={{ borderColor: 'var(--color-border-subtle)', color: 'var(--color-ink-muted)' }}
           >
-            <span>
-              Showing <select aria-label="Records per page" value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))} className="mx-1 rounded border px-1 py-0.5" style={{ borderColor: 'var(--color-border)', background: 'var(--color-surface-raised)' }}>{PAGE_SIZE_OPTIONS.map((size) => <option key={size} value={size}>{size}</option>)}</select> per page · Page {page} of {totalPages}
-            </span>
+            <span>Page {page} of {totalPages}</span>
             <div className="flex gap-2">
               <button
                 onClick={() => setPage((p) => Math.max(1, p - 1))}
