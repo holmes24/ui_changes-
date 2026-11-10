@@ -45,7 +45,7 @@ export function CoordinatorAttendancePage() {
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
-  const [statuses, setStatuses] = useState<Record<string, 'P' | 'A'>>({});
+  const [statuses, setStatuses] = useState<Record<string, 'P' | 'A' | 'WO' | 'H'>>({});
   const [reasons, setReasons] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState<string | null>(null);
@@ -89,7 +89,7 @@ export function CoordinatorAttendancePage() {
       }
       const result = await listCoordinatorAttendance({
         date_from: dateFrom || date, date_to: dateTo || date, pc_id: pcId || undefined,
-        attendance_status: (filterStatus || undefined) as 'present' | 'absent' | undefined,
+        attendance_status: (filterStatus || undefined) as 'present' | 'absent' | 'week_off' | 'holiday' | undefined,
         search: search || undefined, page, page_size: pageSize,
       });
       setRecords(result.records);
@@ -110,10 +110,7 @@ export function CoordinatorAttendancePage() {
 
   async function save(coordinator: Coordinator, attendanceDate: string, saved?: AttendanceRecord) {
     const key = `${coordinator.pc_id}:${attendanceDate}`;
-    const code = statuses[key] ?? (
-      saved?.attendance_status === 'absent' ? 'A' :
-        saved?.attendance_status === 'present' ? 'P' : undefined
-    );
+    const code = statuses[key] ?? saved?.attendance_code as 'P' | 'A' | 'WO' | 'H' | undefined;
     if (!code) return;
     setSaving(key);
     setError('');
@@ -168,7 +165,7 @@ export function CoordinatorAttendancePage() {
   return <section>
     <div className="flex flex-wrap justify-between items-start gap-3 mb-5">
       <div><h1 className="text-lg font-medium" style={{ color: 'var(--color-ink)' }}>Project Coordinator Attendance</h1>
-        <p className="text-sm mt-1" style={{ color: 'var(--color-ink-muted)' }}>Today defaults to Present. Change to Absent when needed. Updates apply to the selected date; date range filters history. Coordinator attendance does not use photo, check-in, or shift times.</p></div>
+        <p className="text-sm mt-1" style={{ color: 'var(--color-ink-muted)' }}>Today defaults to Present on working days and follows the holiday/week-off calendar on closed days. Admin and manual team can change any status. Coordinator attendance does not use photo, check-in, or shift times.</p></div>
       <div className="flex flex-wrap items-center gap-2 text-sm" style={{ color: 'var(--color-ink-muted)' }}>
         <label>Period <select aria-label="Attendance date range preset" value={datePreset} onChange={(event) => selectDatePreset(event.target.value as DatePreset)} className="ml-2 rounded-md border px-2 py-1.5" style={{ borderColor: 'var(--color-border)', background: 'var(--color-surface-raised)' }}>
           <option value="today">Today</option><option value="yesterday">Yesterday</option><option value="week">This week</option><option value="month">This month</option><option value="range">Custom range</option>
@@ -182,7 +179,7 @@ export function CoordinatorAttendancePage() {
     </div>
     <div className="flex flex-wrap gap-2 mb-4">
       <select value={pcId} onChange={(event) => setPcId(event.target.value)} className="rounded-md border px-2 py-1.5 text-sm" style={{ borderColor: 'var(--color-border)', background: 'var(--color-surface-raised)' }}><option value="">All coordinators</option>{coordinators.map((item) => <option key={item.pc_id} value={item.pc_id}>{item.name}</option>)}</select>
-      <select value={filterStatus} onChange={(event) => setFilterStatus(event.target.value)} className="rounded-md border px-2 py-1.5 text-sm" style={{ borderColor: 'var(--color-border)', background: 'var(--color-surface-raised)' }}><option value="">All statuses</option><option value="present">Present</option><option value="absent">Absent</option></select>
+      <select value={filterStatus} onChange={(event) => setFilterStatus(event.target.value)} className="rounded-md border px-2 py-1.5 text-sm" style={{ borderColor: 'var(--color-border)', background: 'var(--color-surface-raised)' }}><option value="">All statuses</option><option value="present">Present</option><option value="absent">Absent</option><option value="week_off">Week-off</option><option value="holiday">Holiday</option></select>
       <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search coordinator…" className="rounded-md border px-2 py-1.5 text-sm" style={{ borderColor: 'var(--color-border)', background: 'var(--color-surface-raised)' }} />
       <label className="ml-auto text-sm" style={{ color: 'var(--color-ink-muted)' }}>Show <select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))} className="rounded-md border px-2 py-1.5" style={{ borderColor: 'var(--color-border)', background: 'var(--color-surface-raised)' }}>{[5, 10, 20, 25, 50, 100].map((size) => <option key={size}>{size}</option>)}</select></label>
     </div>
@@ -192,12 +189,12 @@ export function CoordinatorAttendancePage() {
       <thead style={{ background: 'var(--color-surface-sunken)' }}><tr>{['ID', 'Project Co-ordinator', 'Attendance date', 'Attendance', 'Reason / note', 'Action'].map((heading) => <th key={heading} className="px-3 py-2.5 text-left text-xs font-medium" style={{ color: 'var(--color-ink-muted)' }}>{heading}</th>)}</tr></thead>
       <tbody>{visibleRows.map(({ coordinator, saved, attendanceDate }) => {
         const rowKey = `${coordinator.pc_id}:${attendanceDate}`;
-        const value = statuses[rowKey] ?? (saved?.attendance_status === 'present' ? 'P' : saved?.attendance_status === 'absent' ? 'A' : '');
+        const value = statuses[rowKey] ?? (saved?.attendance_code as 'P' | 'A' | 'WO' | 'H' | undefined) ?? '';
         const reason = reasons[rowKey] ?? saved?.reason ?? '';
         return <tr key={rowKey} className="border-t" style={{ borderColor: 'var(--color-border-subtle)' }}>
           <td className="px-3 py-2.5">{coordinator.pc_id}</td><td className="px-3 py-2.5">{coordinator.name}</td>
           <td className="px-3 py-2.5">{saved?.attendance_date ?? attendanceDate}</td>
-          <td className="px-3 py-2.5"><select aria-label={`Attendance for ${coordinator.name} on ${attendanceDate}`} value={value} onChange={(event) => setStatuses((current) => ({ ...current, [rowKey]: event.target.value as 'P' | 'A' }))} className="rounded-md border px-2 py-1.5" style={{ borderColor: 'var(--color-border)', background: 'var(--color-surface-raised)' }}><option value="">Select status</option><option value="P">Present</option><option value="A">Absent</option></select></td>
+          <td className="px-3 py-2.5"><select aria-label={`Attendance for ${coordinator.name} on ${attendanceDate}`} value={value} onChange={(event) => setStatuses((current) => ({ ...current, [rowKey]: event.target.value as 'P' | 'A' | 'WO' | 'H' }))} className="rounded-md border px-2 py-1.5" style={{ borderColor: 'var(--color-border)', background: 'var(--color-surface-raised)' }}><option value="">Select status</option><option value="P">Present</option><option value="A">Absent</option><option value="WO">Week-off</option><option value="H">Holiday</option></select></td>
           <td className="px-3 py-2.5"><details>
             <summary className="cursor-pointer select-none text-xs" style={{ color: 'var(--color-accent)' }}>
               {reason.trim() ? 'View / edit note' : 'Add note'}

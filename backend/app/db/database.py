@@ -38,6 +38,65 @@ def normalize_date_str(val: str | None) -> str:
     return val[:10]
 
 
+async def get_attendance_calendar_data(
+    date_from: str | None = None, date_to: str | None = None,
+) -> dict:
+    """Return the recurring Sunday default and date-specific calendar events."""
+    db = get_db()
+    events = []
+    norm_from = normalize_date_str(date_from) if date_from else None
+    norm_to = normalize_date_str(date_to) if date_to else None
+    async for event in db.attendance_calendar.find({}):
+        event_date = event.get("event_date")
+        if not event_date:
+            continue
+        if norm_from and event_date < norm_from:
+            continue
+        if norm_to and event_date > norm_to:
+            continue
+        events.append(event)
+    events.sort(key=lambda item: item["event_date"])
+    return {"sunday_weekly_off": True, "events": events}
+
+
+async def save_attendance_calendar_event(
+    event_date: str, kind: str, name: str, changed_by: str,
+) -> dict:
+    db = get_db()
+    now = datetime.now(timezone.utc).isoformat()
+    result = await db.attendance_calendar.find_one_and_update(
+        {"event_date": normalize_date_str(event_date)},
+        {
+            "$set": {
+                "event_date": normalize_date_str(event_date),
+                "kind": kind,
+                "name": name.strip(),
+                "updated_by": changed_by,
+                "updated_at_utc": now,
+            },
+            "$setOnInsert": {"created_by": changed_by, "created_at_utc": now},
+        },
+        return_document=True,
+        upsert=True,
+    )
+    return result
+
+
+async def delete_attendance_calendar_event(event_date: str) -> bool:
+    db = get_db()
+    target_date = normalize_date_str(event_date)
+    matching_ids = []
+    async for event in db.attendance_calendar.find({}):
+        if normalize_date_str(event.get("event_date")) == target_date:
+            matching_ids.append(event.get("_id"))
+    deleted = False
+    for event_id in matching_ids:
+        if event_id is not None:
+            result = await db.attendance_calendar.delete_one({"_id": event_id})
+            deleted = deleted or result.deleted_count > 0
+    return deleted
+
+
 class AssignedSite(BaseModel):
     name: str
     lat: float = Field(ge=-90, le=90)
@@ -779,17 +838,25 @@ async def list_attendance(
                 overrides_by_key[(override["employee_id"], override["attendance_date"])] = override
 
         override_status_codes = {
-            "present": {"P", "M", "HD", "WO", "H"},
+            "present": {"P", "M", "HD"},
             "late": {"L"},
             "absent": {"A", "AL"},
             "flagged": {"F"},
         }[attendance_status]
+        from app.services.attendance_calendar import calendar_codes_for_days
+        calendar_data = await get_attendance_calendar_data()
+        calendar_codes = calendar_codes_for_days(
+            [doc.get("attendance_date", "") for doc in all_records], calendar_data
+        )
         matching_records = []
         for doc in all_records:
             key = (doc.get("employee_id"), doc.get("attendance_date"))
             override = overrides_by_key.get(key)
+            calendar_code = calendar_codes.get(doc.get("attendance_date"))
             if override is not None:
                 matches = override.get("attendance_code") in override_status_codes
+            elif calendar_code and doc.get("entry_type") == "coordinator_manual" and doc.get("defaulted"):
+                matches = calendar_code in override_status_codes
             elif attendance_status == "flagged":
                 matches = doc.get("verdict") == "flagged"
             elif attendance_status == "present":
@@ -815,8 +882,8 @@ async def list_coordinator_attendance(
     query: dict = {"person_role": "PC", "entry_type": "coordinator_manual"}
     if pc_id:
         query["employee_id"] = pc_id
-    if attendance_status:
-        query["attendance_status"] = attendance_status
+    if attendance_status not in {None, "present", "absent", "week_off", "holiday"}:
+        raise ValueError("attendance_status must be present, absent, week_off, or holiday")
     if date_from:
         query["attendance_date"] = {"$gte": normalize_date_str(date_from)}
     if date_to:
@@ -827,24 +894,62 @@ async def list_coordinator_attendance(
         if "employee_id" in query:
             ids = [item for item in ids if item == query["employee_id"]]
         query["employee_id"] = {"$in": ids}
-    total = await db.submissions.count_documents(query)
     records = []
     async for doc in db.submissions.find(query).sort(
         [("attendance_date", -1), ("_id", -1)]
-    ).skip((page - 1) * page_size).limit(page_size):
+    ):
         doc["_id"] = str(doc["_id"])
         records.append(doc)
+    if date_from or date_to:
+        from app.services.attendance_calendar import calendar_codes_for_days
+        calendar_data = await get_attendance_calendar_data(date_from, date_to)
+        calendar_days = sorted({record.get("attendance_date") for record in records if record.get("attendance_date")})
+        calendar_codes = calendar_codes_for_days(calendar_days, calendar_data)
+        code_status = {"WO": ("WO", "week_off"), "H": ("H", "holiday")}
+        for record in records:
+            day = record.get("attendance_date")
+            calendar_code = calendar_codes.get(day)
+            if record.get("defaulted") and calendar_code:
+                record["attendance_code"], record["attendance_status"] = code_status[calendar_code]
+    if attendance_status:
+        from app.services.attendance_calendar import calendar_codes_for_days
+        calendar_data = await get_attendance_calendar_data(date_from, date_to)
+        calendar_codes = calendar_codes_for_days(
+            [record.get("attendance_date", "") for record in records], calendar_data
+        )
+        code_status = {"WO": ("WO", "week_off"), "H": ("H", "holiday")}
+        for record in records:
+            calendar_code = calendar_codes.get(record.get("attendance_date"))
+            if record.get("defaulted") and calendar_code:
+                record["attendance_code"], record["attendance_status"] = code_status[calendar_code]
+        records = [record for record in records if record.get("attendance_status") == attendance_status]
+    elif records:
+        from app.services.attendance_calendar import calendar_codes_for_days
+        calendar_data = await get_attendance_calendar_data(date_from, date_to)
+        calendar_codes = calendar_codes_for_days(
+            [record.get("attendance_date", "") for record in records], calendar_data
+        )
+        code_status = {"WO": ("WO", "week_off"), "H": ("H", "holiday")}
+        for record in records:
+            calendar_code = calendar_codes.get(record.get("attendance_date"))
+            if record.get("defaulted") and calendar_code:
+                record["attendance_code"], record["attendance_status"] = code_status[calendar_code]
+    total = len(records)
+    records = records[(page - 1) * page_size:page * page_size]
     return records, total
 
 
 async def initialize_coordinator_attendance_defaults(
     date: str, created_by: str,
 ) -> int:
-    """Create missing present records for active coordinators, without changing existing choices."""
+    """Create missing default attendance records without changing existing choices."""
     norm_date = normalize_date_str(date)
     coordinators, _ = await list_coordinators(is_active=True, page_size=100_000)
     db = get_db()
     now = datetime.now(timezone.utc).isoformat()
+    calendar_data = await get_attendance_calendar_data(norm_date, norm_date)
+    from app.services.attendance_calendar import calendar_codes_for_days
+    default_code = calendar_codes_for_days([norm_date], calendar_data).get(norm_date, "P")
     for coordinator in coordinators:
         query = {
             "employee_id": coordinator.pc_id,
@@ -852,7 +957,7 @@ async def initialize_coordinator_attendance_defaults(
             "entry_type": "coordinator_manual",
         }
         fields = _coordinator_attendance_fields(
-            coordinator, norm_date, "P", "", created_by, now, defaulted=True
+            coordinator, norm_date, default_code, "", created_by, now, defaulted=True
         )
         # SQL-backed find_one_and_update is transaction-locked and makes this
         # safe to call repeatedly or when two admins open the page together.
@@ -866,11 +971,14 @@ def _coordinator_attendance_fields(
     coordinator: Coordinator, date: str, attendance_code: str,
     reason: str, created_by: str, now: str, *, defaulted: bool,
 ) -> dict:
+    attendance_status = {
+        "P": "present", "A": "absent", "WO": "week_off", "H": "holiday",
+    }[attendance_code]
     return {
         "employee_id": coordinator.pc_id, "employee_name": coordinator.name,
         "person_role": "PC", "pc_id": coordinator.pc_id, "attendance_date": date,
         "area": None,
-        "attendance_status": "present" if attendance_code == "P" else "absent",
+        "attendance_status": attendance_status,
         "attendance_code": attendance_code, "verdict": "verified",
         "review_status": "n/a", "entry_type": "coordinator_manual",
         "created_by": created_by, "reason": reason,
@@ -888,6 +996,8 @@ def _coordinator_attendance_fields(
 async def save_coordinator_attendance(
     pc_id: str, date: str, attendance_code: str, reason: str | None, created_by: str,
 ) -> dict:
+    if attendance_code not in {"P", "A", "WO", "H"}:
+        raise ValueError("attendance_code must be P, A, WO, or H")
     coordinator = await get_coordinator_by_id(pc_id)
     if coordinator is None:
         raise ValueError(f"No project coordinator found with ID: {pc_id}")

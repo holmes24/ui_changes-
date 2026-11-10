@@ -57,7 +57,10 @@ from app.db.database import (
     update_coordinator,
     update_employee_details,
     create_manual_attendance,
+    delete_attendance_calendar_event,
     save_coordinator_attendance,
+    get_attendance_calendar_data,
+    save_attendance_calendar_event,
     delete_attendance_submission,
     delete_coordinator_if_unassigned,
     delete_employee_without_attendance,
@@ -70,6 +73,7 @@ from app.security import verify_webhook_signature
 from app.services.face_match import enroll_embeddings
 from app.redis_queue import ATTENDANCE_STREAM, ensure_stream_group, enqueue, get_redis
 from app.services.attendance_grid import compute_employee_grid, daterange
+from app.services.attendance_calendar import calendar_codes_for_days
 from app.services.attendance_export_xlsx import (
     build_export_workbook,
     build_coordinator_details_workbook,
@@ -123,12 +127,18 @@ class ManualAttendanceRequest(BaseModel):
 class CoordinatorAttendanceRequest(BaseModel):
     pc_id: str
     date: str
-    attendance_code: Literal["P", "A"]
+    attendance_code: Literal["P", "A", "WO", "H"]
     reason: str | None = None
 
 
 class CoordinatorAttendanceDefaultsRequest(BaseModel):
     date: str
+
+
+class AttendanceCalendarEventRequest(BaseModel):
+    date: str
+    kind: Literal["holiday", "weekoff", "other", "working_day"]
+    name: str = Field(min_length=1, max_length=120)
 
 
 class AttendanceOverrideRequest(BaseModel):
@@ -587,7 +597,7 @@ async def get_attendance_grid(
     role: Literal["PC", "FS", "LS", "LSS"] | None = None,
     admin: AdminUser = Depends(get_current_user),
 ):
-    """Return monthly attendance for FS, LS, and LSS participants."""
+    """Return monthly attendance for participants, including calendar markers."""
     import calendar
 
     if month < 1 or month > 12:
@@ -604,6 +614,8 @@ async def get_attendance_grid(
     )
     person_ids = [person.employee_id for person in people]
     submissions = await get_submissions_grouped(person_ids, date_from, date_to)
+    calendar_data = await get_attendance_calendar_data(date_from, date_to)
+    calendar_codes = calendar_codes_for_days(days, calendar_data)
 
     rows = []
     for person in people:
@@ -612,6 +624,7 @@ async def get_attendance_grid(
             person.deactivated_at,
             submissions.get(person.employee_id, {}),
             days,
+            calendar_codes=calendar_codes,
         )
         if grid is None:
             continue
@@ -858,8 +871,8 @@ async def get_coordinator_attendance(
     if admin.role not in {"super_admin", "manual_team"}:
         raise HTTPException(status_code=403, detail="Coordinator attendance is restricted to administrators and manual team")
     attendance_status = attendance_status or None
-    if attendance_status not in {None, "present", "absent"}:
-        raise HTTPException(status_code=400, detail="attendance_status must be present or absent")
+    if attendance_status not in {None, "present", "absent", "week_off", "holiday"}:
+        raise HTTPException(status_code=400, detail="attendance_status must be present, absent, week_off, or holiday")
     records, total = await list_coordinator_attendance(
         pc_id=pc_id, date_from=date_from, date_to=date_to,
         attendance_status=attendance_status, search=search,
@@ -867,6 +880,65 @@ async def get_coordinator_attendance(
     )
     return {"count": len(records), "total": total, "page": page,
             "page_size": page_size, "records": records}
+
+
+@app.get("/attendance/calendar")
+async def get_attendance_calendar(
+    month: int,
+    year: int,
+    admin: AdminUser = Depends(get_current_admin),
+):
+    """Organization-wide weekly-off rules and date-specific attendance events."""
+    import calendar
+
+    if month < 1 or month > 12 or year < 2000 or year > 2100:
+        raise HTTPException(status_code=400, detail="month or year is outside the supported range")
+    date_from = f"{year:04d}-{month:02d}-01"
+    date_to = f"{year:04d}-{month:02d}-{calendar.monthrange(year, month)[1]:02d}"
+    data = await get_attendance_calendar_data(date_from, date_to)
+    return {
+        "month": month,
+        "year": year,
+        "sunday_weekly_off": data["sunday_weekly_off"],
+        "events": data["events"],
+    }
+
+
+@app.put("/attendance/calendar/events")
+async def put_attendance_calendar_event(
+    request: AttendanceCalendarEventRequest,
+    admin: AdminUser = Depends(get_current_admin),
+):
+    try:
+        event_date = datetime.strptime(request.date, "%Y-%m-%d").date().isoformat()
+        if event_date != request.date:
+            raise ValueError("date must use YYYY-MM-DD")
+    except ValueError:
+        raise HTTPException(status_code=422, detail="date must use YYYY-MM-DD")
+    if request.kind == "working_day" and datetime.strptime(request.date, "%Y-%m-%d").date().weekday() != 6:
+        raise HTTPException(
+            status_code=422,
+            detail="Working-day exceptions are only used to lift the default Sunday week-off",
+        )
+    return await save_attendance_calendar_event(
+        event_date, request.kind, request.name, admin.username
+    )
+
+
+@app.delete("/attendance/calendar/events/{event_date}")
+async def remove_attendance_calendar_event(
+    event_date: str,
+    admin: AdminUser = Depends(get_current_admin),
+):
+    try:
+        parsed_date = datetime.strptime(event_date, "%Y-%m-%d").date().isoformat()
+        if parsed_date != event_date:
+            raise ValueError("date must use YYYY-MM-DD")
+    except ValueError:
+        raise HTTPException(status_code=422, detail="date must use YYYY-MM-DD")
+    if not await delete_attendance_calendar_event(parsed_date):
+        raise HTTPException(status_code=404, detail="Calendar event not found")
+    return {"deleted": True}
 
 
 @app.post("/attendance/coordinators/defaults")
@@ -1073,6 +1145,8 @@ async def export_attendance(
     participants = employees
     employee_ids = [person["employee_id"] for person in participants]
     submissions_by_employee = await get_submissions_grouped(employee_ids, date_from, date_to)
+    calendar_data = await get_attendance_calendar_data(date_from, date_to)
+    calendar_codes = calendar_codes_for_days(days, calendar_data)
 
     grids = {}
     for person in participants:
@@ -1081,6 +1155,7 @@ async def export_attendance(
             person.get("deactivated_at"),
             submissions_by_employee.get(person["employee_id"], {}),
             days,
+            calendar_codes=calendar_codes,
         )
 
     if include_coordinator_attendance:
@@ -1090,12 +1165,18 @@ async def export_attendance(
         for pc_id, submissions_by_date in coordinator_submissions.items():
             grids[pc_id] = {
                 day: (
-                    "P" if submission.get("attendance_status") == "present" else
-                    "A" if submission.get("attendance_status") == "absent" else
-                    "—"
+                    calendar_codes[day]
+                    if day in calendar_codes and submission.get("defaulted") else
+                    submission.get("attendance_code") or (
+                        "P" if submission.get("attendance_status") == "present" else
+                        "A" if submission.get("attendance_status") == "absent" else
+                        calendar_codes.get(day, "—")
+                    )
                 )
                 for day, submission in submissions_by_date.items()
             }
+            for day, calendar_code in calendar_codes.items():
+                grids[pc_id].setdefault(day, calendar_code)
 
     xlsx_bytes = build_export_workbook(
         coordinators, employees, grids, days,

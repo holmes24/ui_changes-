@@ -28,7 +28,7 @@ export async function listAttendance(params?: AttendanceListParams) {
 
 export async function listCoordinatorAttendance(params: {
   pc_id?: string; date_from?: string; date_to?: string;
-  attendance_status?: 'present' | 'absent'; search?: string;
+  attendance_status?: 'present' | 'absent' | 'week_off' | 'holiday'; search?: string;
   page?: number; page_size?: number;
 }) {
   const { data } = await apiClient.get<AttendanceListResult>('/attendance/coordinators', { params });
@@ -43,10 +43,37 @@ export async function initializeCoordinatorAttendanceDefaults(date: string) {
 }
 
 export async function saveCoordinatorAttendance(payload: {
-  pc_id: string; date: string; attendance_code: 'P' | 'A'; reason?: string;
+  pc_id: string; date: string; attendance_code: 'P' | 'A' | 'WO' | 'H'; reason?: string;
 }) {
   const { data } = await apiClient.post<AttendanceRecord>('/attendance/coordinators', payload);
   return data;
+}
+
+export type AttendanceCalendarEvent = {
+  event_date: string;
+  kind: 'holiday' | 'weekoff' | 'other' | 'working_day';
+  name: string;
+  created_by?: string;
+  updated_by?: string;
+  updated_at_utc?: string;
+};
+
+export async function getAttendanceCalendar(month: number, year: number) {
+  const { data } = await apiClient.get<{ month: number; year: number; events: AttendanceCalendarEvent[] }>(
+    '/attendance/calendar', { params: { month, year } }
+  );
+  return data;
+}
+
+export async function saveCalendarEvent(event: AttendanceCalendarEvent) {
+  const { data } = await apiClient.put<AttendanceCalendarEvent>(
+    '/attendance/calendar/events', { date: event.event_date, kind: event.kind, name: event.name }
+  );
+  return data;
+}
+
+export async function deleteCalendarEvent(date: string) {
+  await apiClient.delete(`/attendance/calendar/events/${date}`);
 }
 
 export async function resolveAttendance(

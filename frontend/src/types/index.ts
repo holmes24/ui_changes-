@@ -113,7 +113,7 @@ export interface AttendanceRecord {
   expected_city?: string | null;
   expected_district?: string | null;
   review_display?: string;
-  attendance_status: 'present' | 'absent' | 'pending' | 'late' | 'absent_late' | null;
+  attendance_status: 'present' | 'absent' | 'pending' | 'late' | 'absent_late' | 'week_off' | 'holiday' | null;
   flag_reason: string | null;
   verdict: Verdict;
   review_status: ReviewStatus;

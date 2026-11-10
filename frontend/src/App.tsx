@@ -9,6 +9,7 @@ import { EmployeesPage } from './pages/Employees';
 import { CoordinatorsPage } from './pages/Coordinators';
 import { UserManagementPage } from './pages/UserManagement';
 import { CoordinatorAttendancePage } from './pages/CoordinatorAttendance';
+import { AttendanceCalendarPage } from './pages/AttendanceCalendar';
 
 export default function App() {
   return (
@@ -30,6 +31,7 @@ export default function App() {
               <Route element={<ProtectedRoute requireManualTeam />}>
                 <Route path="/coordinators" element={<CoordinatorsPage />} />
                 <Route path="/coordinator-attendance" element={<CoordinatorAttendancePage />} />
+                <Route path="/attendance-calendar" element={<AttendanceCalendarPage />} />
                 <Route path="/users" element={<UserManagementPage />} />
               </Route>
               <Route path="/" element={<Navigate to="/attendance" replace />} />
