@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { createPortal } from 'react-dom';
 import { downloadExport } from '../api/attendance';
 import type { Coordinator } from '../types';
 
@@ -42,35 +43,56 @@ export function ExportPanel({
     }
   }
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
+  return createPortal(
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Export to Excel"
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 1000,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        overflowY: 'auto',
+        padding: '1rem',
+        boxSizing: 'border-box',
+        background: 'rgba(12, 31, 63, 0.68)',
+        backdropFilter: 'blur(3px)',
+      }}
+    >
       <div
-        className="w-full max-w-sm rounded-lg border p-6 shadow-xl"
-        style={{ borderColor: 'var(--color-border)', background: 'var(--color-surface-raised)' }}
+        className="attendance-export-dialog"
+        style={{
+          position: 'relative',
+          display: 'block',
+          flex: '0 0 auto',
+          width: 'min(36rem, calc(100vw - 2rem))',
+          maxWidth: '100%',
+          maxHeight: 'calc(100vh - 2rem)',
+          overflowY: 'auto',
+          boxSizing: 'border-box',
+          padding: '1.5rem',
+          background: '#fff',
+          color: '#12203a',
+          border: '1px solid #dfe5ee',
+          borderRadius: '1.15rem',
+          boxShadow: '0 24px 60px -12px rgba(12, 31, 63, 0.45)',
+          transform: 'none',
+          animation: 'none',
+          opacity: 1,
+        }}
       >
-        <h2 className="text-base font-medium mb-4" style={{ color: 'var(--color-ink)' }}>
+        <h2 className="text-lg font-extrabold mb-4" style={{ color: 'var(--color-ink)' }}>
           Export to Excel
         </h2>
 
         <div className="flex gap-2 mb-4">
-          <button
-            onClick={() => setMode('month')}
-            className="flex-1 px-3 py-1.5 rounded-md text-xs border"
-            style={{
-              borderColor: mode === 'month' ? 'var(--color-accent)' : 'var(--color-border)',
-              color: mode === 'month' ? 'var(--color-accent)' : 'var(--color-ink-muted)',
-            }}
-          >
+          <button onClick={() => setMode('month')} aria-pressed={mode === 'month'} className="chip flex-1">
             By month
           </button>
-          <button
-            onClick={() => setMode('range')}
-            className="flex-1 px-3 py-1.5 rounded-md text-xs border"
-            style={{
-              borderColor: mode === 'range' ? 'var(--color-accent)' : 'var(--color-border)',
-              color: mode === 'range' ? 'var(--color-accent)' : 'var(--color-ink-muted)',
-            }}
-          >
+          <button onClick={() => setMode('range')} aria-pressed={mode === 'range'} className="chip flex-1">
             Date range
           </button>
         </div>
@@ -132,7 +154,7 @@ export function ExportPanel({
           </div>
         )}
 
-        <label className="block text-xs mb-1" style={{ color: 'var(--color-ink-muted)' }}>
+        <label className="field-label">
           Coordinator (optional — narrows to one)
         </label>
         <select
@@ -153,7 +175,7 @@ export function ExportPanel({
           ))}
         </select>
 
-        <label className="flex items-center gap-2 mb-4 text-sm cursor-pointer" style={{ color: 'var(--color-ink-muted)' }}>
+        <label className="flex items-center gap-2 mb-4 text-sm font-semibold cursor-pointer" style={{ color: 'var(--color-ink-muted)' }}>
           <input
             type="checkbox"
             checked={includeCoordinatorAttendance}
@@ -177,19 +199,19 @@ export function ExportPanel({
         )}
 
         <div className="flex gap-2 justify-end">
-          <button onClick={onClose} className="px-3 py-1.5 rounded-md text-sm" style={{ color: 'var(--color-ink-muted)' }}>
+          <button onClick={onClose} className="btn btn-ghost">
             Cancel
           </button>
           <button
             onClick={handleExport}
             disabled={downloading || (mode === 'range' && (!dateFrom || !dateTo))}
-            className="px-3 py-1.5 rounded-md text-sm font-medium disabled:opacity-50"
-            style={{ background: 'var(--color-accent)', color: 'white' }}
+            className="btn btn-primary"
           >
             {downloading ? 'Preparing…' : 'Download .xlsx'}
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

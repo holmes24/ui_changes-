@@ -756,6 +756,11 @@ async def list_attendance(
         query["employee_id"] = employee_id
     if verdict is not None:
         query["verdict"] = verdict
+        # "Flagged" means awaiting a manual decision. Resolved submissions
+        # keep their original verdict for audit history, but are no longer
+        # part of the active flagged queue.
+        if verdict == "flagged":
+            query["review_status"] = "pending"
     if attendance_status is not None and attendance_status not in {
         "present", "late", "absent", "flagged",
     }:
@@ -858,7 +863,10 @@ async def list_attendance(
             elif calendar_code and doc.get("entry_type") == "coordinator_manual" and doc.get("defaulted"):
                 matches = calendar_code in override_status_codes
             elif attendance_status == "flagged":
-                matches = doc.get("verdict") == "flagged"
+                matches = (
+                    doc.get("verdict") == "flagged"
+                    and doc.get("review_status") == "pending"
+                )
             elif attendance_status == "present":
                 matches = doc.get("attendance_status") == "present"
             elif attendance_status == "late":

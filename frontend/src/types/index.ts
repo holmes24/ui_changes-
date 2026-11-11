@@ -104,6 +104,7 @@ export interface AttendanceRecord {
   photo_timestamp?: string;
   attendance_code?: string;
   status_change_reason?: string | null;
+  resolution_reason?: string | null;
   check_in_at_ist?: string | null;
   geofence_display?: string;
   location_match_status?: 'disabled' | 'in_range' | 'in_area' | 'out_of_area' | 'unavailable' | null;

@@ -13,6 +13,7 @@ from app.db.database import (
     Coordinator,
     RosterEntry,
     _validated_hierarchy,
+    list_attendance,
     migrate_legacy_reporting_hierarchy,
 )
 from app.services.attendance_export_xlsx import (
@@ -139,6 +140,84 @@ class AttendanceStatusOverrideDisplayTests(unittest.IsolatedAsyncioTestCase):
             response = await get_attendance(admin=admin)
 
         self.assertEqual(response["records"][0]["attendance_code"], "A")
+
+
+class ActiveFlagFilterTests(unittest.IsolatedAsyncioTestCase):
+    class Cursor:
+        def __init__(self, records):
+            self.records = list(records)
+
+        def sort(self, *_args):
+            return self
+
+        def skip(self, count):
+            self.records = self.records[count:]
+            return self
+
+        def limit(self, count):
+            self.records = self.records[:count]
+            return self
+
+        def __aiter__(self):
+            self._items = iter(self.records)
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self._items)
+            except StopIteration:
+                raise StopAsyncIteration
+
+    async def _run_flag_filter(self, *, verdict=None, attendance_status=None):
+        records = [
+            {"_id": "pending", "employee_id": "EMP001", "attendance_date": "2026-11-04",
+             "verdict": "flagged", "review_status": "pending", "attendance_status": "pending"},
+            {"_id": "approved", "employee_id": "EMP002", "attendance_date": "2026-11-04",
+             "verdict": "flagged", "review_status": "approved", "attendance_status": "present"},
+            {"_id": "rejected", "employee_id": "EMP003", "attendance_date": "2026-11-04",
+             "verdict": "flagged", "review_status": "rejected", "attendance_status": "absent"},
+        ]
+
+        class Submissions:
+            @staticmethod
+            def find(query):
+                filtered = records
+                if query.get("review_status") == "pending":
+                    filtered = [item for item in filtered if item["review_status"] == "pending"]
+                return ActiveFlagFilterTests.Cursor(filtered)
+
+            @staticmethod
+            async def count_documents(query):
+                return sum(
+                    1 for item in records
+                    if query.get("review_status") != "pending" or item["review_status"] == "pending"
+                )
+
+        class Overrides:
+            @staticmethod
+            def find(_query):
+                return ActiveFlagFilterTests.Cursor([])
+
+        database = SimpleNamespace(submissions=Submissions(), attendance_overrides=Overrides())
+        with (
+            patch("app.db.database.get_db", return_value=database),
+            patch("app.db.database.list_coordinators", new_callable=AsyncMock, return_value=([], 0)),
+            patch("app.db.database.get_attendance_calendar_data", new_callable=AsyncMock, return_value={"events": []}),
+        ):
+            filtered, total = await list_attendance(
+                verdict=verdict, attendance_status=attendance_status
+            )
+        return [record["_id"] for record in filtered], total
+
+    async def test_flagged_verdict_filter_excludes_resolved_reviews(self):
+        ids, total = await self._run_flag_filter(verdict="flagged")
+        self.assertEqual(ids, ["pending"])
+        self.assertEqual(total, 1)
+
+    async def test_flagged_status_filter_excludes_resolved_reviews(self):
+        ids, total = await self._run_flag_filter(attendance_status="flagged")
+        self.assertEqual(ids, ["pending"])
+        self.assertEqual(total, 1)
 
 
 class CoordinatorDetailsWorkbookTests(unittest.TestCase):

@@ -727,7 +727,11 @@ async def get_attendance(
         record["issues_display"] = format_issue_list(issues)
         for attempt in record.get("previous_flagged_attempts") or []:
             attempt["issues_display"] = format_issue_list(attempt.get("issues") or [])
-        record["flag_reason"] = flag_reason_from_issues(issues) if record.get("verdict") == "flagged" else None
+        record["flag_reason"] = (
+            flag_reason_from_issues(issues)
+            if record.get("verdict") == "flagged" and record.get("review_status") == "pending"
+            else None
+        )
         photo_ts = record.get("photo_timestamp") or (record.get("overlay") or {}).get("timestamp")
         if photo_ts:
             try:
