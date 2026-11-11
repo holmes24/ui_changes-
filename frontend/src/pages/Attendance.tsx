@@ -633,6 +633,12 @@ export function AttendancePage() {
             )}
           </tbody>
         </table>
+        <div
+          className="px-4 py-2.5 border-t text-xs"
+          style={{ borderColor: 'var(--color-border-subtle)', color: 'var(--color-ink-muted)' }}
+        >
+          Total attendance records: {total}
+        </div>
         {totalPages > 1 && (
           <div
             className="flex items-center justify-between px-4 py-2.5 border-t text-xs"
