@@ -633,13 +633,6 @@ export function AttendancePage() {
             )}
           </tbody>
         </table>
-        <div
-          className="px-4 py-2.5 border-t text-xs"
-          style={{ borderColor: 'var(--color-border-subtle)', color: 'var(--color-ink-muted)' }}
-        >
-          Total attendance records: {total}
-        </div>
-
         {totalPages > 1 && (
           <div
             className="flex items-center justify-between px-4 py-2.5 border-t text-xs"
@@ -667,8 +660,6 @@ export function AttendancePage() {
           </div>
         )}
       </div>
-
-      {totalPages === 1 && <div className="mt-2 text-xs" style={{ color: 'var(--color-ink-muted)' }}>Show <select aria-label="Records per page" value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))} className="mx-1 rounded border px-1 py-0.5" style={{ borderColor: 'var(--color-border)', background: 'var(--color-surface-raised)' }}>{PAGE_SIZE_OPTIONS.map((size) => <option key={size} value={size}>{size}</option>)}</select> records per page</div>}
 
       {resolving && (
         <ResolveModal
