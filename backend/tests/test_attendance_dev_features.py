@@ -371,9 +371,9 @@ class FaceSizeReviewTests(unittest.TestCase):
         image.save(output, format="PNG")
         return output.getvalue()
 
-    def _check_with_face_ratio(self, face_ratio: float) -> tuple[str, list[str], dict]:
+    def _check_with_face_height_ratio(self, face_height_ratio: float) -> tuple[str, list[str], dict]:
         face_width = 27
-        face_height = round(face_ratio * 10000 / face_width)
+        face_height = round(face_height_ratio * 100)
         face = SimpleNamespace(
             bbox=[10, 10, 10 + face_width, 10 + face_height],
             det_score=1.0,
@@ -386,15 +386,15 @@ class FaceSizeReviewTests(unittest.TestCase):
         ):
             return check_passive_liveness(self._image_bytes())
 
-    def test_seven_percent_threshold_accepts_the_observed_clear_face_size(self):
-        status, issues, metrics = self._check_with_face_ratio(0.0723)
+    def test_seven_percent_of_image_height_is_accepted(self):
+        status, issues, metrics = self._check_with_face_height_ratio(0.0723)
 
-        self.assertEqual(metrics["face_ratio"], 0.0729)
+        self.assertEqual(metrics["face_height_percent"], 7.0)
         self.assertEqual(status, "passed")
         self.assertNotIn("face_too_small", issues)
 
-    def test_faces_still_below_the_test_threshold_are_flagged(self):
-        status, issues, _ = self._check_with_face_ratio(0.06)
+    def test_faces_below_seven_percent_of_image_height_are_flagged(self):
+        status, issues, _ = self._check_with_face_height_ratio(0.06)
 
         self.assertEqual(status, "suspicious")
         self.assertIn("face_too_small", issues)
